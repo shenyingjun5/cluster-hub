@@ -164,6 +164,27 @@ export class HubClient {
     return res.json();
   }
 
+  async httpPut(path: string, body: any): Promise<any> {
+    const url = `${this.config.hubUrl}${path}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.config.token) {
+      headers['Authorization'] = `Bearer ${this.config.token}`;
+    }
+    if (this.config.adminKey) {
+      headers['X-Admin-Key'] = this.config.adminKey;
+    }
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Hub HTTP ${res.status}: ${text}`);
+    }
+    return res.json();
+  }
+
   private async httpDelete(path: string): Promise<any> {
     const url = `${this.config.hubUrl}${path}`;
     const headers: Record<string, string> = {};
@@ -515,9 +536,21 @@ export class HubClient {
     pending.resolve(result);
   }
 
+  // 共享配置回调
+  public onSharedConfig?: (config: any) => void;
+
   private handleDirect(msg: WSMessage): void {
-    if (msg.payload?.action === 'connected') {
+    if (msg.payload?.action === 'connected' || msg.payload?.event === 'connected') {
       this.logger.info(`[cluster-hub] 连接确认: nodeId=${msg.payload.nodeId}`);
+      // 连接时附带的共享配置
+      if (msg.payload?.sharedConfig && this.onSharedConfig) {
+        this.onSharedConfig(msg.payload.sharedConfig);
+      }
+    } else if (msg.payload?.event === 'shared_config') {
+      // Hub 推送的配置更新
+      if (msg.payload?.config && this.onSharedConfig) {
+        this.onSharedConfig(msg.payload.config);
+      }
     }
   }
 

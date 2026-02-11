@@ -17,6 +17,7 @@ import path from 'path';
 import fs from 'fs';
 import { HubClient } from './hub-client.js';
 import { TaskStore, ChatStore, NodeEventStore } from './store.js';
+import { setCredentials, registerFeishuTools, hasCredentials } from './feishu-tools.js';
 import type {
   HubPluginConfig, DEFAULT_CONFIG, ResultPayload, WSMessage,
   QueuedTask, ChatConfig, StoredTask, StoredChatMessage, StoredNodeEvent,
@@ -667,6 +668,15 @@ const plugin = {
       handleNodeEvent('node_offline', { nodeId });
     };
 
+    // Hub 下发共享配置 → 注册飞书工具
+    client.onSharedConfig = (config: any) => {
+      api.logger.info(`[cluster-hub] 收到共享配置: ${JSON.stringify(Object.keys(config))}`);
+      if (config.feishu?.appId && config.feishu?.appSecret) {
+        setCredentials(config.feishu);
+        registerFeishuTools(api, api.logger);
+      }
+    };
+
     // ------------------------------------------------------------------
     // Gateway RPC 方法 — 每个 handler 都捕获 broadcast 引用
     // ------------------------------------------------------------------
@@ -834,6 +844,32 @@ const plugin = {
         if (!nodeId) { respond(false, { message: '未注册' }); return; }
         const body = params?.code ? { code: params.code } : {};
         const data = await client.httpPost(`/api/nodes/${nodeId}/invite-code`, body);
+        respond(true, data.data || data);
+      } catch (err: any) {
+        respond(false, { message: err.message });
+      }
+    });
+
+    // hub.shared-config.get — 获取共享配置
+    api.registerGatewayMethod('hub.shared-config.get', async ({ context, respond }: any) => {
+      captureBroadcast(context);
+      try {
+        const clusterId = client.getConfig().clusterId;
+        if (!clusterId) { respond(false, { message: '未注册' }); return; }
+        const data = await client.httpGet(`/api/clusters/${clusterId}/shared-config`);
+        respond(true, data.data || data);
+      } catch (err: any) {
+        respond(false, { message: err.message });
+      }
+    });
+
+    // hub.shared-config.set — 设置共享配置（仅根节点）
+    api.registerGatewayMethod('hub.shared-config.set', async ({ context, respond, params }: any) => {
+      captureBroadcast(context);
+      try {
+        const clusterId = client.getConfig().clusterId;
+        if (!clusterId) { respond(false, { message: '未注册' }); return; }
+        const data = await client.httpPut(`/api/clusters/${clusterId}/shared-config`, params || {});
         respond(true, data.data || data);
       } catch (err: any) {
         respond(false, { message: err.message });

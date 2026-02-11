@@ -14,23 +14,10 @@ OpenClaw Hub 集群插件 — 让多台 OpenClaw 节点跨网络协作，实现�
 
 ## 安装
 
-### 方式一：npm 安装（推荐）
-
 ```bash
-npm install @hpplay-lebo/cluster-hub
-
-# 链接到 OpenClaw 插件目录
-ln -s $(npm root)/@hpplay-lebo/cluster-hub ~/.openclaw/extensions/cluster-hub
-
-# 重启 Gateway
-openclaw gateway restart
-```
-
-### 方式二：手动安装
-
-```bash
-# 下载/复制插件到 extensions 目录
-cp -r cluster-hub ~/.openclaw/extensions/cluster-hub
+# 克隆到 OpenClaw 插件目录
+cd ~/.openclaw/extensions
+git clone https://github.com/shenyingjun5/cluster-hub.git cluster-hub
 
 # 重启 Gateway
 openclaw gateway restart

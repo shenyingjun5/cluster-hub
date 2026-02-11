@@ -1,9 +1,10 @@
 {
   "id": "cluster-hub",
   "name": "Cluster Hub",
-  "version": "2.0.0",
+  "version": "3.2.0",
   "description": "OpenClaw Hub 云端集群插件 — 通过 Hub 中转实现跨网络节点注册、任务分发、实时通讯",
   "author": "招财",
+  "skills": ["./skills"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

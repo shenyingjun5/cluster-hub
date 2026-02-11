@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.0] - 2026-02-11
+
+### Added
+- **Owner 身份自动下发** — 飞书用户 `/bind` 时自动将 open_id 写入集群共享配置，下发给所有节点
+- 创建文档后自动给 owner 加 `full_access` 权限，无需 AI 手动操作
+- 工具 description 注入 owner openId，AI 手动加权限时知道该加给谁
+- `SharedConfig` 新增 `owner` 字段（openId + name）
+
 ## [3.0.0] - 2026-02-11
 
 ### Added

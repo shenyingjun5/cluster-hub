@@ -1,4 +1,4 @@
-# @openclaw/cluster-hub
+# @hpplay-lebo/cluster-hub
 
 OpenClaw Hub 集群插件 — 让多台 OpenClaw 节点跨网络协作，实现聊天、任务分发和集群管理。
 
@@ -17,13 +17,12 @@ OpenClaw Hub 集群插件 — 让多台 OpenClaw 节点跨网络协作，实现�
 ### 方式一：npm 安装（推荐）
 
 ```bash
-npm install @openclaw/cluster-hub
-```
+npm install @hpplay-lebo/cluster-hub
 
-将安装目录链接到 OpenClaw 插件目录：
+# 链接到 OpenClaw 插件目录
+ln -s $(npm root)/@hpplay-lebo/cluster-hub ~/.openclaw/extensions/cluster-hub
 
-```bash
-ln -s $(npm root)/@openclaw/cluster-hub ~/.openclaw/extensions/cluster-hub
+# 重启 Gateway
 openclaw gateway restart
 ```
 
@@ -32,6 +31,8 @@ openclaw gateway restart
 ```bash
 # 下载/复制插件到 extensions 目录
 cp -r cluster-hub ~/.openclaw/extensions/cluster-hub
+
+# 重启 Gateway
 openclaw gateway restart
 ```
 
@@ -44,20 +45,54 @@ openclaw plugins list
 
 ## 配置
 
-编辑 `~/.openclaw/config.yaml`：
+安装后编辑 `~/.openclaw/openclaw.json`，在 `plugins.entries` 中添加 `cluster-hub` 配置：
 
-```yaml
-plugins:
-  entries:
-    cluster-hub:
-      enabled: true
-      config:
-        hubUrl: "https://hub.openclaw.ai"  # Hub 服务地址
-        nodeName: "My Mac"                  # 节点显示名称
-        nodeAlias: "home"                   # 节点别名（集群内唯一）
-        capabilities:                       # 能力标签
-          - coding
-          - shell
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "cluster-hub": {
+        "enabled": true,
+        "config": {
+          // Hub 服务地址
+          "hubUrl": "https://hub.openclaw.ai",
+          // 节点显示名称
+          "nodeName": "My Mac",
+          // 节点别名（集群内唯一，用于 #别名 提及）
+          "nodeAlias": "home",
+          // 能力标签
+          "capabilities": ["coding", "shell"],
+          // 启动时自动连接 Hub
+          "autoConnect": true
+
+          // === 以下字段注册后自动写入，无需手动填 ===
+          // "nodeId": "",
+          // "token": "",
+          // "clusterId": "",
+          // "parentId": null
+        }
+      }
+    }
+  }
+}
+```
+
+> **注意**: 以上只展示了 `cluster-hub` 相关配置，实际 `openclaw.json` 中还有其他配置项（`auth`、`agents`、`channels` 等），请勿覆盖已有内容。
+
+### 加入已有集群（子节点）
+
+获取父节点的 ID 和邀请码，在配置中添加 `parentId`：
+
+```jsonc
+{
+  "config": {
+    "hubUrl": "https://hub.openclaw.ai",
+    "nodeName": "Office Mac",
+    "nodeAlias": "office",
+    "parentId": "父节点的UUID",
+    "capabilities": ["coding", "shell"]
+  }
+}
 ```
 
 ## 快速开始
@@ -74,8 +109,6 @@ openclaw hub register
 
 ### 2. 加入集群（子节点）
 
-获取父节点的 ID 和邀请码，配置中填写 `parentId`，然后注册时提供邀请码：
-
 ```bash
 openclaw hub register --parent <父节点ID> --invite <邀请码>
 ```
@@ -89,7 +122,7 @@ openclaw hub status
 # 查看所有节点
 openclaw hub nodes
 
-# 给子节点发指令
+# 给节点发指令
 openclaw hub send <节点别名> "检查磁盘空间"
 
 # 查看任务
@@ -116,7 +149,6 @@ openclaw hub tasks
 "查看集群状态"
 "让 #office 执行 ls -la"
 "给所有节点发送 '报告系统负载'"
-"帮我把这个任务分发给 #gpu-server 和 #home"
 ```
 
 ## Gateway RPC
@@ -140,7 +172,7 @@ openclaw hub tasks
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `hubUrl` | string | `https://hub.openclaw.ai` | Hub 服务地址 |
+| `hubUrl` | string | — | Hub 服务地址 |
 | `nodeName` | string | — | 节点显示名称 |
 | `nodeAlias` | string | — | 节点别名（`#` 提及用，集群内唯一） |
 | `capabilities` | string[] | `["coding","shell"]` | 能力标签 |

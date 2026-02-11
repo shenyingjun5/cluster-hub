@@ -409,17 +409,47 @@ async function permRemove(token: string, type: string, memberType: string, membe
 // ============================================================
 
 async function contactSearch(query: string) {
-  const data = await feishuPost('/open-apis/search/v1/user', { query });
-  return {
-    users: (data?.users || []).map((u: any) => ({
+  // 方案1: 尝试搜索 API
+  try {
+    const data = await feishuPost('/open-apis/search/v1/user', { query });
+    const users = (data?.users || []).map((u: any) => ({
       open_id: u.open_id,
       name: u.name,
       en_name: u.en_name,
       email: u.email,
-      avatar: u.avatar?.avatar_72,
       department: u.department_name,
-    })),
-  };
+    }));
+    if (users.length > 0) return { users };
+  } catch {}
+
+  // 方案2: 回退到通讯录按部门列出 + 名字过滤
+  try {
+    const allUsers: any[] = [];
+    let pageToken: string | undefined;
+    // 最多翻3页（300人），避免大企业超时
+    for (let i = 0; i < 3; i++) {
+      const params: Record<string, string> = { department_id: '0', page_size: '100', user_id_type: 'open_id' };
+      if (pageToken) params.page_token = pageToken;
+      const data = await feishuGet('/open-apis/contact/v3/users/find_by_department', params);
+      const items = data?.items || [];
+      allUsers.push(...items);
+      if (!data?.has_more) break;
+      pageToken = data?.page_token;
+    }
+    const q = query.toLowerCase();
+    const matched = allUsers
+      .filter((u: any) => (u.name || '').toLowerCase().includes(q) || (u.en_name || '').toLowerCase().includes(q))
+      .map((u: any) => ({
+        open_id: u.open_id,
+        name: u.name,
+        en_name: u.en_name,
+        email: u.email,
+        department_ids: u.department_ids,
+      }));
+    return { users: matched, source: 'contact_directory' };
+  } catch (e: any) {
+    return { users: [], error: e.message };
+  }
 }
 
 async function contactBatchGetId(emails?: string[], mobiles?: string[]) {

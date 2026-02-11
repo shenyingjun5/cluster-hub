@@ -16,7 +16,7 @@ import { randomUUID } from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { HubClient } from './hub-client.js';
-import { TaskStore, ChatStore, NodeEventStore } from './store.js';
+import { TaskStore, ReceivedTaskStore, ChatStore, NodeEventStore } from './store.js';
 import { setCredentials, setOwner, registerFeishuTools, hasCredentials } from './feishu-tools.js';
 import type {
   HubPluginConfig, DEFAULT_CONFIG, ResultPayload, WSMessage,
@@ -30,6 +30,7 @@ import type {
 let pluginApi: any;
 let client: HubClient;
 let taskStore: TaskStore;
+let receivedTaskStore: ReceivedTaskStore;
 let chatStore: ChatStore;
 let nodeEventStore: NodeEventStore;
 let taskQueue: TaskQueue;
@@ -228,6 +229,9 @@ class TaskQueue {
     task.startedAt = Date.now();
     this.dispatching.set(task.taskId, task);
 
+    // 持久化标记 running
+    receivedTaskStore.markRunning(task.taskId);
+
     client.sendWS({
       type: 'task_ack' as any,
       id: task.taskId,
@@ -264,6 +268,9 @@ class TaskQueue {
     this.completed.unshift(task);
     if (this.completed.length > 50) this.completed.pop();
 
+    // 持久化结果
+    receivedTaskStore.recordResult(task.taskId, task.status === 'completed', task.result, task.error);
+
     client.sendResult(task.taskId, task.fromNodeId, {
       success: task.status === 'completed',
       result: task.result,
@@ -288,6 +295,7 @@ class TaskQueue {
       const task = this.queue.splice(qIdx, 1)[0];
       task.status = 'cancelled';
       task.completedAt = Date.now();
+      receivedTaskStore.markCancelled(taskId);
       client.sendResult(task.taskId, task.fromNodeId, {
         success: false, error: '任务已被取消',
       });
@@ -622,6 +630,11 @@ function handleIncomingTask(msg: WSMessage): void {
   }
 
   pluginApi.logger.info(`[cluster-hub] 收到任务 ${taskId} from ${fromNodeId}`);
+
+  // 持久化记录
+  const fromName = resolveNodeName(fromNodeId);
+  receivedTaskStore.recordReceived(taskId, fromNodeId, fromName, instruction);
+
   taskQueue.enqueue(taskId, fromNodeId, instruction, msg.payload?.priority || 'normal');
 }
 
@@ -642,6 +655,7 @@ const plugin = {
 
     // 初始化持久化存储
     taskStore = new TaskStore(DATA_DIR);
+    receivedTaskStore = new ReceivedTaskStore(DATA_DIR);
     chatStore = new ChatStore(DATA_DIR);
     nodeEventStore = new NodeEventStore(DATA_DIR);
     api.logger.info(`[cluster-hub] 数据目录: ${DATA_DIR}`);
@@ -936,6 +950,32 @@ const plugin = {
           limit: params?.limit,
         });
         respond(true, { tasks });
+      } catch (err: any) {
+        respond(false, { message: err.message });
+      }
+    });
+
+    // hub.task.received — 获取本节点接收到的任务列表
+    api.registerGatewayMethod('hub.task.received', async ({ context, respond, params }: any) => {
+      captureBroadcast(context);
+      try {
+        const tasks = receivedTaskStore.list({
+          status: params?.status,
+          limit: params?.limit || 50,
+        });
+        const stats = receivedTaskStore.stats();
+        respond(true, { tasks, stats });
+      } catch (err: any) {
+        respond(false, { message: err.message });
+      }
+    });
+
+    // hub.task.received.clear — 清理已完成的接收任务
+    api.registerGatewayMethod('hub.task.received.clear', async ({ context, respond }: any) => {
+      captureBroadcast(context);
+      try {
+        const removed = receivedTaskStore.clearCompleted();
+        respond(true, { removed });
       } catch (err: any) {
         respond(false, { message: err.message });
       }
@@ -1759,6 +1799,7 @@ const plugin = {
       stop: () => {
         api.logger.info('[cluster-hub] 后台服务停止，写盘...');
         taskStore?.flush();
+        receivedTaskStore?.flush();
         chatStore?.flush();
         nodeEventStore?.flush();
         client.disconnect();

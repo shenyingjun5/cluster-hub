@@ -216,6 +216,21 @@ export interface StoredTask {
   durationMs?: number;
 }
 
+/** 接收到的任务（子节点持久化） */
+export interface ReceivedTask {
+  taskId: string;
+  fromNodeId: string;
+  fromNodeName?: string;
+  instruction: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  receivedAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  result?: string;
+  error?: string;
+  durationMs?: number;
+}
+
 /** 持久化聊天消息 */
 export interface StoredChatMessage {
   id: string;

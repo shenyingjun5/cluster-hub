@@ -426,13 +426,23 @@ export function registerFeishuTools(api: any, logger: any): boolean {
     return false;
   }
 
-  // 检测 OpenClaw 飞书插件是否已注册同名工具
-  // 如果已有，不重复注册
+  // 检测 OpenClaw 飞书插件是否已启用
+  // 只有飞书插件 enabled 且有配置时才跳过；disabled 或不存在时正常注册
   try {
-    const existingTools = api._registeredToolNames || new Set();
-    if (existingTools.has?.('feishu_doc')) {
-      logger.info('[feishu-tools] 检测到 OpenClaw 飞书插件已注册，跳过');
-      return false;
+    const config = api.config;
+    const entries = config?.plugins?.entries || {};
+    const feishuEntry = entries['feishu'] as any;
+    // 飞书插件存在且未明确 disable → 说明它会注册工具，我们跳过
+    if (feishuEntry && feishuEntry.enabled !== false) {
+      // 还要确认它有实际的飞书账号配置（有 appId），否则它也不会注册工具
+      const accounts = feishuEntry.config?.accounts || feishuEntry.accounts;
+      const hasAccount = Array.isArray(accounts) 
+        ? accounts.some((a: any) => a.appId || a.config?.appId)
+        : (feishuEntry.config?.appId || feishuEntry.appId);
+      if (hasAccount) {
+        logger.info('[feishu-tools] 检测到 OpenClaw 飞书插件已启用，跳过注册');
+        return false;
+      }
     }
   } catch {}
 

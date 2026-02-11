@@ -405,6 +405,88 @@ async function permRemove(token: string, type: string, memberType: string, membe
 }
 
 // ============================================================
+//  Contact API
+// ============================================================
+
+async function contactSearch(query: string) {
+  const data = await feishuPost('/open-apis/search/v1/user', { query });
+  return {
+    users: (data?.users || []).map((u: any) => ({
+      open_id: u.open_id,
+      name: u.name,
+      en_name: u.en_name,
+      email: u.email,
+      avatar: u.avatar?.avatar_72,
+      department: u.department_name,
+    })),
+  };
+}
+
+async function contactBatchGetId(emails?: string[], mobiles?: string[]) {
+  const body: any = {};
+  if (emails?.length) body.emails = emails;
+  if (mobiles?.length) body.mobiles = mobiles;
+  const data = await feishuPost('/open-apis/contact/v3/users/batch_get_id?user_id_type=open_id', body);
+  return {
+    email_users: data?.email_users || {},
+    mobile_users: data?.mobile_users || {},
+  };
+}
+
+async function contactGetUser(userId: string) {
+  const data = await feishuGet(`/open-apis/contact/v3/users/${userId}`, { user_id_type: 'open_id' });
+  const u = data?.user;
+  return {
+    open_id: u?.open_id,
+    name: u?.name,
+    en_name: u?.en_name,
+    email: u?.email,
+    mobile: u?.mobile,
+    avatar: u?.avatar?.avatar_72,
+    department_ids: u?.department_ids,
+    status: u?.status,
+  };
+}
+
+// ============================================================
+//  Message API
+// ============================================================
+
+async function messageSend(receiveId: string, receiveIdType: string, msgType: string, content: any) {
+  const data = await feishuPost(`/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
+    receive_id: receiveId,
+    msg_type: msgType,
+    content: typeof content === 'string' ? content : JSON.stringify(content),
+  });
+  return {
+    message_id: data?.message_id,
+    create_time: data?.create_time,
+  };
+}
+
+async function messageSendText(receiveId: string, receiveIdType: string, text: string) {
+  return messageSend(receiveId, receiveIdType, 'text', JSON.stringify({ text }));
+}
+
+async function messageSendRichText(receiveId: string, receiveIdType: string, title: string, contentParts: any[][]) {
+  const post = { zh_cn: { title, content: contentParts } };
+  return messageSend(receiveId, receiveIdType, 'post', JSON.stringify(post));
+}
+
+async function messageSendBatch(receiveIds: string[], receiveIdType: string, msgType: string, content: any) {
+  const results: any[] = [];
+  for (const id of receiveIds) {
+    try {
+      const r = await messageSend(id, receiveIdType, msgType, content);
+      results.push({ receiveId: id, success: true, message_id: r.message_id });
+    } catch (e: any) {
+      results.push({ receiveId: id, success: false, error: e.message });
+    }
+  }
+  return { sent: results.filter(r => r.success).length, failed: results.filter(r => !r.success).length, results };
+}
+
+// ============================================================
 //  App Scopes API
 // ============================================================
 
@@ -598,6 +680,86 @@ export function registerFeishuTools(api: any, logger: any): boolean {
     },
   }, { name: 'feishu_perm' });
 
+  // ---- feishu_contact ----
+  api.registerTool({
+    name: 'feishu_contact',
+    label: 'Feishu Contact',
+    description: 'Feishu contact/user lookup. Actions: search (by name), batch_get_id (by emails/mobiles), get (by open_id). Use search to find a person\'s open_id by name.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['search', 'batch_get_id', 'get'], description: 'Action' },
+        query: { type: 'string', description: 'Search keyword (name) for search action' },
+        emails: { type: 'array', items: { type: 'string' }, description: 'Email list for batch_get_id' },
+        mobiles: { type: 'array', items: { type: 'string' }, description: 'Mobile list for batch_get_id' },
+        user_id: { type: 'string', description: 'User open_id for get action' },
+      },
+      required: ['action'],
+    },
+    async execute(_id: string, p: any) {
+      try {
+        switch (p.action) {
+          case 'search': return json(await contactSearch(p.query));
+          case 'batch_get_id': return json(await contactBatchGetId(p.emails, p.mobiles));
+          case 'get': return json(await contactGetUser(p.user_id));
+          default: return json({ error: `Unknown action: ${p.action}` });
+        }
+      } catch (err: any) { return json({ error: err.message }); }
+    },
+  }, { name: 'feishu_contact' });
+
+  // ---- feishu_message ----
+  api.registerTool({
+    name: 'feishu_message',
+    label: 'Feishu Message',
+    description: 'Send Feishu messages. Actions: send (single), send_batch (multiple). Supports text and rich text. Use feishu_contact to look up open_id first if needed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['send', 'send_batch'], description: 'Action' },
+        receive_id: { type: 'string', description: 'Recipient ID (open_id or email)' },
+        receive_id_type: { type: 'string', enum: ['open_id', 'email', 'user_id', 'chat_id'], description: 'Recipient ID type (default: open_id)' },
+        receive_ids: { type: 'array', items: { type: 'string' }, description: 'Multiple recipient IDs for send_batch' },
+        msg_type: { type: 'string', enum: ['text', 'post'], description: 'Message type: text (plain) or post (rich text with links). Default: text' },
+        text: { type: 'string', description: 'Message text content (for text type)' },
+        title: { type: 'string', description: 'Rich text title (for post type)' },
+        content: {
+          type: 'array',
+          description: 'Rich text content blocks (for post type). Array of lines, each line is array of elements like {tag:"text",text:"..."} or {tag:"a",text:"click",href:"https://..."}',
+          items: { type: 'array', items: { type: 'object' } },
+        },
+      },
+      required: ['action'],
+    },
+    async execute(_id: string, p: any) {
+      try {
+        const idType = p.receive_id_type || 'open_id';
+        const msgType = p.msg_type || 'text';
+
+        if (p.action === 'send') {
+          if (msgType === 'text') {
+            return json(await messageSendText(p.receive_id, idType, p.text));
+          } else if (msgType === 'post') {
+            return json(await messageSendRichText(p.receive_id, idType, p.title || '', p.content || []));
+          } else {
+            return json(await messageSend(p.receive_id, idType, msgType, p.text || p.content));
+          }
+        } else if (p.action === 'send_batch') {
+          const ids = p.receive_ids || [];
+          if (msgType === 'text') {
+            const content = JSON.stringify({ text: p.text });
+            return json(await messageSendBatch(ids, idType, 'text', content));
+          } else if (msgType === 'post') {
+            const post = { zh_cn: { title: p.title || '', content: p.content || [] } };
+            return json(await messageSendBatch(ids, idType, 'post', JSON.stringify(post)));
+          }
+          return json({ error: 'Unsupported msg_type for batch' });
+        }
+        return json({ error: `Unknown action: ${p.action}` });
+      } catch (err: any) { return json({ error: err.message }); }
+    },
+  }, { name: 'feishu_message' });
+
   // ---- feishu_app_scopes ----
   api.registerTool({
     name: 'feishu_app_scopes',
@@ -611,6 +773,6 @@ export function registerFeishuTools(api: any, logger: any): boolean {
   }, { name: 'feishu_app_scopes' });
 
   _registered = true;
-  logger.info('[feishu-tools] ✅ 已注册 5 个飞书工具（feishu_doc/wiki/drive/perm/app_scopes）');
+  logger.info('[feishu-tools] ✅ 已注册 7 个飞书工具（feishu_doc/wiki/drive/perm/contact/message/app_scopes）');
   return true;
 }

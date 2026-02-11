@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0] - 2026-02-11
+
+### Added
+- **feishu_contact** 工具 — 通讯录查询，按姓名搜索用户获取 open_id，支持邮箱/手机号批量查询
+- **feishu_message** 工具 — 发送飞书消息，支持文本和富文本（带链接），支持批量发送给多人
+- 添加权限时自动通知对方（`need_notification=true`）
+
 ## [3.1.0] - 2026-02-11
 
 ### Added

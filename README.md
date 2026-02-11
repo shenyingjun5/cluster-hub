@@ -141,6 +141,8 @@ openclaw hub tasks
 | `feishu_wiki` | 知识库操作（空间/节点/创建） |
 | `feishu_drive` | 云空间管理（文件列表/创建文件夹/移动/删除） |
 | `feishu_perm` | 权限管理（查看/添加/移除协作者） |
+| `feishu_contact` | 通讯录查询（按姓名搜索/按邮箱查 open_id） |
+| `feishu_message` | 发送飞书消息（文本/富文本/批量发送） |
 | `feishu_app_scopes` | 查看应用权限 |
 
 > **冲突处理**: 如果节点已安装并启用了 OpenClaw 飞书插件，Hub 下发的工具会自动跳过，不会冲突。

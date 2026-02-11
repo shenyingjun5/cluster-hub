@@ -391,7 +391,7 @@ async function permList(token: string, type: string) {
 }
 
 async function permAdd(token: string, type: string, memberType: string, memberId: string, perm: string) {
-  const data = await feishuPost(`/open-apis/drive/v1/permissions/${token}/members?type=${type}&need_notification=false`, {
+  const data = await feishuPost(`/open-apis/drive/v1/permissions/${token}/members?type=${type}&need_notification=true`, {
     member_type: memberType, member_id: memberId, perm,
   });
   return { success: true, member: data?.member };

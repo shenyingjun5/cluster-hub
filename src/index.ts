@@ -17,7 +17,7 @@ import path from 'path';
 import fs from 'fs';
 import { HubClient } from './hub-client.js';
 import { TaskStore, ChatStore, NodeEventStore } from './store.js';
-import { setCredentials, registerFeishuTools, hasCredentials } from './feishu-tools.js';
+import { setCredentials, setOwner, registerFeishuTools, hasCredentials } from './feishu-tools.js';
 import type {
   HubPluginConfig, DEFAULT_CONFIG, ResultPayload, WSMessage,
   QueuedTask, ChatConfig, StoredTask, StoredChatMessage, StoredNodeEvent,
@@ -671,6 +671,9 @@ const plugin = {
     // Hub 下发共享配置 → 注册飞书工具
     client.onSharedConfig = (config: any) => {
       api.logger.info(`[cluster-hub] 收到共享配置: ${JSON.stringify(Object.keys(config))}`);
+      if (config.owner) {
+        setOwner(config.owner);
+      }
       if (config.feishu?.appId && config.feishu?.appSecret) {
         setCredentials(config.feishu);
         registerFeishuTools(api, api.logger);

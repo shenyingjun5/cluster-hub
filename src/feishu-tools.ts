@@ -13,7 +13,13 @@ interface FeishuCredentials {
   domain?: string;
 }
 
+interface OwnerInfo {
+  openId: string;
+  name?: string;
+}
+
 let _credentials: FeishuCredentials | null = null;
+let _owner: OwnerInfo | null = null;
 let _tenantToken: string | null = null;
 let _tokenExpiresAt = 0;
 
@@ -27,6 +33,10 @@ export function setCredentials(creds: FeishuCredentials) {
   _credentials = creds;
   _tenantToken = null;
   _tokenExpiresAt = 0;
+}
+
+export function setOwner(owner: OwnerInfo | undefined) {
+  if (owner?.openId) _owner = owner;
 }
 
 export function hasCredentials(): boolean {
@@ -181,11 +191,23 @@ async function docCreate(title: string, folderToken?: string) {
     folder_token: folderToken,
   });
   const doc = data?.document;
-  return {
+  const result: any = {
     document_id: doc?.document_id,
     title: doc?.title,
     url: `https://feishu.cn/docx/${doc?.document_id}`,
   };
+
+  // 自动给 owner 加编辑权限
+  if (_owner?.openId && doc?.document_id) {
+    try {
+      await permAdd(doc.document_id, 'docx', 'openid', _owner.openId, 'full_access');
+      result.owner_permission = 'full_access';
+    } catch (e: any) {
+      result.owner_permission_error = e.message;
+    }
+  }
+
+  return result;
 }
 
 async function docWrite(docToken: string, markdown: string) {
@@ -447,10 +469,14 @@ export function registerFeishuTools(api: any, logger: any): boolean {
   } catch {}
 
   // ---- feishu_doc ----
+  const ownerHint = _owner?.openId
+    ? ` Documents created via API are owned by the app bot. Owner (openid: ${_owner.openId}) is auto-granted full_access on create.`
+    : '';
+
   api.registerTool({
     name: 'feishu_doc',
     label: 'Feishu Doc',
-    description: 'Feishu document operations. Actions: read, write, append, create, list_blocks, get_block, update_block, delete_block',
+    description: `Feishu document operations. Actions: read, write, append, create, list_blocks, get_block, update_block, delete_block.${ownerHint}`,
     parameters: {
       type: 'object',
       properties: {
@@ -540,10 +566,14 @@ export function registerFeishuTools(api: any, logger: any): boolean {
   }, { name: 'feishu_drive' });
 
   // ---- feishu_perm ----
+  const permOwnerHint = _owner?.openId
+    ? ` Owner open_id: ${_owner.openId}`
+    : '';
+
   api.registerTool({
     name: 'feishu_perm',
     label: 'Feishu Perm',
-    description: 'Feishu permission management. Actions: list, add, remove',
+    description: `Feishu permission management. Actions: list, add, remove.${permOwnerHint}`,
     parameters: {
       type: 'object',
       properties: {

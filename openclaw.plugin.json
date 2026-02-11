@@ -1,0 +1,151 @@
+{
+  "id": "cluster-hub",
+  "name": "Cluster Hub",
+  "version": "2.0.0",
+  "description": "OpenClaw Hub 云端集群插件 — 通过 Hub 中转实现跨网络节点注册、任务分发、实时通讯",
+  "author": "招财",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "hubUrl": {
+        "type": "string",
+        "default": "https://openclaw-hub.hpplay.com.cn",
+        "description": "Hub 服务地址"
+      },
+      "adminKey": {
+        "type": "string",
+        "description": "Hub Admin Key（用于注册根节点）"
+      },
+      "nodeId": {
+        "type": "string",
+        "description": "本节点 ID（注册后自动写入）"
+      },
+      "nodeName": {
+        "type": "string",
+        "description": "本节点显示名称"
+      },
+      "nodeAlias": {
+        "type": "string",
+        "description": "本节点别名（用于 @ 提及）"
+      },
+      "token": {
+        "type": "string",
+        "description": "Node Token（JWT，注册后自动写入）"
+      },
+      "clusterId": {
+        "type": "string",
+        "description": "所属集群 ID（注册后自动写入）"
+      },
+      "parentId": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "父节点 ID（null = 根节点）"
+      },
+      "capabilities": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "coding",
+          "shell"
+        ],
+        "description": "本节点能力标签"
+      },
+      "heartbeatIntervalMs": {
+        "type": "number",
+        "default": 30000,
+        "description": "心跳间隔 (ms)"
+      },
+      "reconnectIntervalMs": {
+        "type": "number",
+        "default": 5000,
+        "description": "断线重连间隔 (ms)"
+      },
+      "taskTimeoutMs": {
+        "type": "number",
+        "default": 300000,
+        "description": "任务默认超时 (ms)"
+      },
+      "autoConnect": {
+        "type": "boolean",
+        "default": true,
+        "description": "启动时自动连接 Hub WebSocket"
+      },
+      "autoInjectSession": {
+        "type": "boolean",
+        "default": true,
+        "description": "收到任务时自动注入主会话执行"
+      },
+      "selfTaskMode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "hub"
+        ],
+        "default": "local",
+        "description": "自发任务执行模式：local=本地直接执行，hub=通过Hub中转"
+      }
+    }
+  },
+  "uiHints": {
+    "hubUrl": {
+      "label": "Hub 地址",
+      "placeholder": "https://openclaw-hub.hpplay.com.cn"
+    },
+    "adminKey": {
+      "label": "Admin Key",
+      "sensitive": true
+    },
+    "nodeId": {
+      "label": "节点 ID",
+      "help": "注册后自动填写"
+    },
+    "nodeName": {
+      "label": "节点名称",
+      "placeholder": "我的 Mac"
+    },
+    "nodeAlias": {
+      "label": "节点别名",
+      "placeholder": "home"
+    },
+    "token": {
+      "label": "Node Token",
+      "sensitive": true,
+      "help": "注册后自动填写"
+    },
+    "clusterId": {
+      "label": "集群 ID",
+      "help": "注册后自动填写"
+    },
+    "parentId": {
+      "label": "父节点 ID",
+      "help": "null 表示根节点"
+    },
+    "capabilities": {
+      "label": "能力标签",
+      "help": "coding, shell, browser, gpu 等"
+    },
+    "heartbeatIntervalMs": {
+      "label": "心跳间隔",
+      "suffix": "ms"
+    },
+    "reconnectIntervalMs": {
+      "label": "重连间隔",
+      "suffix": "ms"
+    },
+    "taskTimeoutMs": {
+      "label": "任务超时",
+      "suffix": "ms"
+    },
+    "autoConnect": {
+      "label": "自动连接"
+    },
+    "autoInjectSession": {
+      "label": "收到任务自动执行"
+    }
+  }
+}

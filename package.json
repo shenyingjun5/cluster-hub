@@ -1,0 +1,40 @@
+{
+  "name": "@openclaw/cluster-hub",
+  "version": "2.0.0",
+  "description": "OpenClaw Hub cluster plugin — cross-network node collaboration, chat, and task orchestration",
+  "author": "OpenClaw",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openclaw/cluster-hub"
+  },
+  "homepage": "https://github.com/openclaw/cluster-hub#readme",
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src/",
+    "openclaw.plugin.json",
+    "README.md",
+    "docs/"
+  ],
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "cluster",
+    "hub",
+    "multi-node",
+    "task-orchestration",
+    "ai-agent"
+  ],
+  "scripts": {
+    "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.33",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
+  }
+}

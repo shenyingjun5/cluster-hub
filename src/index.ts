@@ -145,12 +145,12 @@ async function dispatchTaskToAgent(instruction: string): Promise<{ runId: string
   return { runId: agentResult?.runId || idempotencyKey, sessionKey };
 }
 
-/** 后台等待 agent 完成，收集结果，清理 session */
+/** 后台等待 agent 完成，收集结果，清理 session（空闲超时） */
 async function waitAndCollectResult(runId: string, sessionKey: string, timeoutMs?: number): Promise<ResultPayload> {
-  const timeout = timeoutMs || client.getConfig().taskTimeoutMs || 300_000;
+  const idleTimeout = timeoutMs || client.getConfig().taskTimeoutMs || 300_000;
 
   try {
-    await gatewayRpc('agent.wait', { runId, timeoutMs: timeout }, timeout + 5_000);
+    await waitWithIdleTimeout(runId, sessionKey, idleTimeout);
 
     const history = await gatewayRpc('chat.history', { sessionKey, limit: 30 }, 10_000);
     const messages = history?.messages || [];
@@ -172,6 +172,49 @@ async function waitAndCollectResult(runId: string, sessionKey: string, timeoutMs
   } catch (err: any) {
     gatewayRpc('sessions.delete', { key: sessionKey }, 5_000).catch(() => { });
     return { success: false, error: err.message };
+  }
+}
+
+/**
+ * 空闲超时等待 — 分段调用 agent.wait，每段间检查 chat.history 是否有新消息
+ * 有新消息则重置空闲计时器，无新消息超过 idleTimeoutMs 则放弃
+ */
+async function waitWithIdleTimeout(runId: string, sessionKey: string, idleTimeoutMs: number): Promise<void> {
+  const CHUNK_MS = 30_000; // 每次等待 30 秒
+  let lastMsgCount = 0;
+  let lastActivityAt = Date.now();
+
+  // 获取初始消息数
+  try {
+    const init = await gatewayRpc('chat.history', { sessionKey, limit: 1 }, 5_000);
+    lastMsgCount = init?.total || init?.messages?.length || 0;
+  } catch {}
+
+  while (true) {
+    try {
+      await gatewayRpc('agent.wait', { runId, timeoutMs: CHUNK_MS }, CHUNK_MS + 5_000);
+      return; // agent 完成了
+    } catch (err: any) {
+      // 区分：超时 vs 真正的错误
+      const isTimeout = /timeout|timed?\s*out/i.test(err.message);
+      if (!isTimeout) throw err; // 非超时错误直接抛出
+
+      // 超时了，检查是否有新活动
+      try {
+        const history = await gatewayRpc('chat.history', { sessionKey, limit: 1 }, 5_000);
+        const currentCount = history?.total || history?.messages?.length || 0;
+        if (currentCount > lastMsgCount) {
+          lastMsgCount = currentCount;
+          lastActivityAt = Date.now();
+          pluginApi.logger.info(`[cluster-hub] agent 仍在活动中 (${currentCount} msgs)，重置空闲计时器`);
+        }
+      } catch {}
+
+      // 检查空闲超时
+      if (Date.now() - lastActivityAt > idleTimeoutMs) {
+        throw new Error(`空闲超时 ${Math.round(idleTimeoutMs / 1000)}s — agent 无新输出`);
+      }
+    }
   }
 }
 
@@ -380,7 +423,7 @@ async function handleIncomingChat(msg: WSMessage): Promise<void> {
     }
 
     try {
-      await gatewayRpc('agent.wait', { runId, timeoutMs: 300_000 }, 305_000);
+      await waitWithIdleTimeout(runId, sessionKey, 300_000);
     } finally {
       if (refreshTimer) clearInterval(refreshTimer);
     }
@@ -519,22 +562,28 @@ function handleChatReply(msg: WSMessage): void {
   const fromNodeId = msg.from!;
   const { messages: replyMsgs, role, done, content } = msg.payload || {};
 
-  // 只在 done=true 时持久化最终回复
-  if (done) {
-    let text = '';
-    if (replyMsgs && Array.isArray(replyMsgs)) {
-      text = replyMsgs
-        .filter((m: any) => m.role === 'assistant')
-        .map((m: any) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
-        .join('\n');
-    } else if (content) {
-      text = typeof content === 'string' ? content : JSON.stringify(content);
-    }
+  // 提取文本内容
+  let text = '';
+  if (replyMsgs && Array.isArray(replyMsgs)) {
+    text = replyMsgs
+      .filter((m: any) => m.role === 'assistant')
+      .map((m: any) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
+      .join('\n');
+  } else if (content) {
+    text = typeof content === 'string' ? content : JSON.stringify(content);
+  }
 
-    if (text) {
-      const message = chatStore.appendMessage(fromNodeId, { role: 'assistant', content: text });
-      broadcast('hub.chat.message', { nodeId: fromNodeId, message });
-    }
+  if (text) {
+    // delta 和 done 都写入 chatStore + 广播
+    const message = chatStore.appendMessage(fromNodeId, {
+      role: 'assistant',
+      content: text,
+    });
+    broadcast('hub.chat.message', {
+      nodeId: fromNodeId,
+      message,
+      done: !!done,
+    });
   }
 }
 

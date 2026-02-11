@@ -1660,6 +1660,36 @@ const plugin = {
         client.disconnect();
         console.log('✅ 已断开');
       });
+
+      hub.command('invite')
+        .description('查看或生成邀请码')
+        .option('--new', '生成新邀请码')
+        .option('--node <nodeId>', '指定节点 ID')
+        .action(async (opts: any) => {
+          const nodeId = opts.node || client.getConfig().nodeId;
+          if (!nodeId) { console.error('❌ 没有节点 ID'); return; }
+          try {
+            if (opts.new) {
+              const data = await client.httpPost(`/api/nodes/${nodeId}/invite-code`, {});
+              const code = data.data?.inviteCode || data.inviteCode;
+              console.log(`✅ 新邀请码: ${code}`);
+              console.log(`\n子节点加入命令:`);
+              console.log(`  openclaw hub register --parent ${nodeId} --invite ${code} --name "节点名" --alias "别名"`);
+            } else {
+              const data = await client.httpGet(`/api/nodes/${nodeId}/invite-code`);
+              const code = data.data?.inviteCode || data.inviteCode;
+              if (code) {
+                console.log(`📋 当前邀请码: ${code}`);
+                console.log(`\n子节点加入命令:`);
+                console.log(`  openclaw hub register --parent ${nodeId} --invite ${code} --name "节点名" --alias "别名"`);
+              } else {
+                console.log('暂无邀请码，使用 openclaw hub invite --new 生成');
+              }
+            }
+          } catch (err: any) {
+            console.error(`❌ 失败: ${err.message}`);
+          }
+        });
     }, { commands: ['hub'] });
 
     // ------------------------------------------------------------------

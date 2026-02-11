@@ -1582,12 +1582,14 @@ const plugin = {
         .option('--name <name>', '节点名称')
         .option('--alias <alias>', '节点别名')
         .option('--parent <parentId>', '父节点 ID')
+        .option('--invite <code>', '邀请码（加入已有集群时需要）')
         .action(async (opts: any) => {
           try {
             const result = await client.register({
               name: opts.name || client.getConfig().nodeName || 'OpenClaw Node',
               alias: opts.alias || client.getConfig().nodeAlias || `node-${Date.now()}`,
               parentId: opts.parent || null,
+              inviteCode: opts.invite || undefined,
               capabilities: client.getConfig().capabilities,
             });
             await persistConfig();

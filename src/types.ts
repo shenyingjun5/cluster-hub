@@ -85,6 +85,7 @@ export interface RegisterRequest {
   name: string;
   alias: string;
   parentId?: string | null;
+  inviteCode?: string;
   capabilities?: string[];
 }
 

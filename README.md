@@ -24,6 +24,18 @@ git clone https://github.com/shenyingjun5/cluster-hub.git cluster-hub
 openclaw gateway restart
 ```
 
+### 更新
+
+```bash
+# 自动检查并更新到最新版本
+~/.openclaw/extensions/cluster-hub/update.sh
+
+# 重启 Gateway 生效
+openclaw gateway restart
+```
+
+也可以直接告诉 AI："更新 Hub 插件"，它会自动执行。
+
 ### 验证安装
 
 ```bash

@@ -18,6 +18,7 @@
     "src/",
     "skills/",
     "openclaw.plugin.json",
+    "update.sh",
     "README.md",
     "docs/"
   ],

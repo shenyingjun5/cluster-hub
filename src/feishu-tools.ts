@@ -98,7 +98,13 @@ async function feishuPost(path: string, body: any): Promise<any> {
     },
     body: JSON.stringify(body),
   });
-  const data = await res.json() as any;
+  const text = await res.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e: any) {
+    throw new Error(`JSON Error: ${e.message}. Status: ${res.status}. Body: ${text.substring(0, 200)}`);
+  }
   if (data.code !== 0) throw new Error(data.msg || `API error ${data.code}`);
   return data.data;
 }
@@ -210,13 +216,55 @@ async function docCreate(title: string, folderToken?: string) {
   return result;
 }
 
+function simpleMarkdownToBlocks(markdown: string): any[] {
+  const blocks: any[] = [];
+  const lines = markdown.split('\n');
+  let inCodeBlock = false;
+  let codeContent = '';
+
+  for (const line of lines) {
+    if (line.trim().startsWith('```')) {
+      if (inCodeBlock) {
+        blocks.push({
+          block_type: 14,
+          code: { elements: [{ text_run: { content: codeContent.replace(/\n$/, '') } }], language: 1 }
+        });
+        inCodeBlock = false;
+        codeContent = '';
+      } else {
+        inCodeBlock = true;
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeContent += line + '\n';
+      continue;
+    }
+
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.startsWith('# ')) {
+      blocks.push({ block_type: 3, heading1: { elements: [{ text_run: { content: trimmed.substring(2) } }] } });
+    } else if (trimmed.startsWith('## ')) {
+      blocks.push({ block_type: 4, heading2: { elements: [{ text_run: { content: trimmed.substring(3) } }] } });
+    } else if (trimmed.startsWith('### ')) {
+      blocks.push({ block_type: 5, heading3: { elements: [{ text_run: { content: trimmed.substring(4) } }] } });
+    } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      blocks.push({ block_type: 12, bullet: { elements: [{ text_run: { content: trimmed.substring(2) } }] } });
+    } else if (trimmed.startsWith('> ')) {
+      blocks.push({ block_type: 15, quote: { elements: [{ text_run: { content: trimmed.substring(2) } }] } });
+    } else {
+      blocks.push({ block_type: 2, text: { elements: [{ text_run: { content: line } }] } });
+    }
+  }
+  return blocks;
+}
+
 async function docWrite(docToken: string, markdown: string) {
-  // 1. 转换 markdown 为 blocks
-  const converted = await feishuPost('/open-apis/docx/v1/documents/convert', {
-    content_type: 'markdown',
-    content: markdown,
-  });
-  const blocks = converted?.blocks || [];
+  // 1. 转换 markdown 为 blocks (本地转换，不再依赖不稳定的 convert 接口)
+  const blocks = simpleMarkdownToBlocks(markdown);
 
   // 2. 清除现有内容
   const existing = await feishuGet(`/open-apis/docx/v1/documents/${docToken}/blocks`);
@@ -249,11 +297,7 @@ async function docWrite(docToken: string, markdown: string) {
 }
 
 async function docAppend(docToken: string, markdown: string) {
-  const converted = await feishuPost('/open-apis/docx/v1/documents/convert', {
-    content_type: 'markdown',
-    content: markdown,
-  });
-  const blocks = converted?.blocks || [];
+  const blocks = simpleMarkdownToBlocks(markdown);
   if (blocks.length === 0) throw new Error('Content is empty');
 
   const inserted = await feishuPost(

@@ -216,14 +216,112 @@ async function docCreate(title: string, folderToken?: string) {
   return result;
 }
 
+/** 解析行内格式（粗体、斜体、删除线、行内代码、链接） */
+function parseInlineElements(text: string): any[] {
+  const elements: any[] = [];
+  // 匹配: **bold**, *italic*, ~~strike~~, `code`, [text](url)
+  const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|~~(.+?)~~|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    // 前面的普通文本
+    if (match.index > lastIndex) {
+      elements.push({ text_run: { content: text.substring(lastIndex, match.index) } });
+    }
+
+    if (match[2]) {
+      // **bold**
+      elements.push({ text_run: { content: match[2], text_element_style: { bold: true } } });
+    } else if (match[3]) {
+      // *italic*
+      elements.push({ text_run: { content: match[3], text_element_style: { italic: true } } });
+    } else if (match[4]) {
+      // ~~strike~~
+      elements.push({ text_run: { content: match[4], text_element_style: { strikethrough: true } } });
+    } else if (match[5]) {
+      // `code`
+      elements.push({ text_run: { content: match[5], text_element_style: { inline_code: true } } });
+    } else if (match[6] && match[7]) {
+      // [text](url)
+      elements.push({ text_run: { content: match[6], text_element_style: { link: { url: encodeURI(match[7]) } } } });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // 剩余文本
+  if (lastIndex < text.length) {
+    elements.push({ text_run: { content: text.substring(lastIndex) } });
+  }
+
+  return elements.length > 0 ? elements : [{ text_run: { content: text } }];
+}
+
+/** 判断是否是 markdown 表格行（含 | 分隔） */
+function isTableRow(line: string): boolean {
+  return /^\s*\|.*\|\s*$/.test(line);
+}
+
+/** 判断是否是表格分隔行（如 |---|---|） */
+function isTableSeparator(line: string): boolean {
+  return /^\s*\|[\s\-:|]+\|\s*$/.test(line);
+}
+
+/** 将 markdown 表格行集合转为代码块内容 */
+function tableLinesToCodeBlock(tableLines: string[]): string {
+  // 解析每行的单元格
+  const rows = tableLines
+    .filter(l => !isTableSeparator(l))
+    .map(l => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim()));
+
+  if (rows.length === 0) return '';
+
+  // 计算每列最大宽度
+  const colCount = Math.max(...rows.map(r => r.length));
+  const colWidths: number[] = [];
+  for (let c = 0; c < colCount; c++) {
+    colWidths[c] = Math.max(...rows.map(r => (r[c] || '').length), 3);
+  }
+
+  // 格式化输出
+  const output: string[] = [];
+  rows.forEach((row, i) => {
+    const cells = row.map((cell, c) => cell.padEnd(colWidths[c]));
+    output.push('| ' + cells.join(' | ') + ' |');
+    if (i === 0) {
+      // 表头后加分隔线
+      output.push('| ' + colWidths.map(w => '-'.repeat(w)).join(' | ') + ' |');
+    }
+  });
+
+  return output.join('\n');
+}
+
 function simpleMarkdownToBlocks(markdown: string): any[] {
   const blocks: any[] = [];
   const lines = markdown.split('\n');
   let inCodeBlock = false;
   let codeContent = '';
+  let tableLines: string[] = [];
+
+  const flushTable = () => {
+    if (tableLines.length > 0) {
+      const content = tableLinesToCodeBlock(tableLines);
+      if (content) {
+        blocks.push({
+          block_type: 14,
+          code: { elements: [{ text_run: { content } }], language: 1 }
+        });
+      }
+      tableLines = [];
+    }
+  };
 
   for (const line of lines) {
+    // 代码块处理
     if (line.trim().startsWith('```')) {
+      flushTable();
       if (inCodeBlock) {
         blocks.push({
           block_type: 14,
@@ -242,23 +340,67 @@ function simpleMarkdownToBlocks(markdown: string): any[] {
       continue;
     }
 
+    // 表格行收集
+    if (isTableRow(line)) {
+      tableLines.push(line);
+      continue;
+    } else {
+      flushTable();
+    }
+
     const trimmed = line.trim();
+
+    // 空行跳过
     if (!trimmed) continue;
 
+    // 分割线
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push({ block_type: 22, divider: {} });
+      continue;
+    }
+
+    // 标题
     if (trimmed.startsWith('# ')) {
-      blocks.push({ block_type: 3, heading1: { elements: [{ text_run: { content: trimmed.substring(2) } }] } });
+      blocks.push({ block_type: 3, heading1: { elements: parseInlineElements(trimmed.substring(2)) } });
     } else if (trimmed.startsWith('## ')) {
-      blocks.push({ block_type: 4, heading2: { elements: [{ text_run: { content: trimmed.substring(3) } }] } });
+      blocks.push({ block_type: 4, heading2: { elements: parseInlineElements(trimmed.substring(3)) } });
     } else if (trimmed.startsWith('### ')) {
-      blocks.push({ block_type: 5, heading3: { elements: [{ text_run: { content: trimmed.substring(4) } }] } });
-    } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-      blocks.push({ block_type: 12, bullet: { elements: [{ text_run: { content: trimmed.substring(2) } }] } });
-    } else if (trimmed.startsWith('> ')) {
-      blocks.push({ block_type: 15, quote: { elements: [{ text_run: { content: trimmed.substring(2) } }] } });
-    } else {
-      blocks.push({ block_type: 2, text: { elements: [{ text_run: { content: line } }] } });
+      blocks.push({ block_type: 5, heading3: { elements: parseInlineElements(trimmed.substring(4)) } });
+    }
+    // 有序列表
+    else if (/^\d+\.\s/.test(trimmed)) {
+      const content = trimmed.replace(/^\d+\.\s/, '');
+      blocks.push({ block_type: 13, ordered: { elements: parseInlineElements(content) } });
+    }
+    // 无序列表
+    else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      blocks.push({ block_type: 12, bullet: { elements: parseInlineElements(trimmed.substring(2)) } });
+    }
+    // 引用
+    else if (trimmed.startsWith('> ')) {
+      blocks.push({ block_type: 15, quote: { elements: parseInlineElements(trimmed.substring(2)) } });
+    }
+    // TODO
+    else if (/^- \[([ x])\]\s/.test(trimmed)) {
+      const done = trimmed[3] === 'x';
+      const content = trimmed.substring(6);
+      blocks.push({ block_type: 17, todo: { elements: parseInlineElements(content), style: { done } } });
+    }
+    // 普通文本
+    else {
+      blocks.push({ block_type: 2, text: { elements: parseInlineElements(line) } });
     }
   }
+
+  // 结尾清理
+  flushTable();
+  if (inCodeBlock && codeContent) {
+    blocks.push({
+      block_type: 14,
+      code: { elements: [{ text_run: { content: codeContent.replace(/\n$/, '') } }], language: 1 }
+    });
+  }
+
   return blocks;
 }
 

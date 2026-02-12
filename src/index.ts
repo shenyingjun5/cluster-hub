@@ -150,7 +150,24 @@ async function waitAndCollectResult(runId: string, sessionKey: string, timeoutMs
   const idleTimeout = timeoutMs || client.getConfig().taskTimeoutMs || 300_000;
 
   try {
-    await waitWithIdleTimeout(runId, sessionKey, idleTimeout);
+    // 等待 agent 完成：30s 轮询 + 空闲超时
+    const POLL_MS = 30_000;
+    let lastActivity = Date.now();
+    let lastCount = 0;
+    while (true) {
+      const waitResult = await gatewayRpc('agent.wait', { runId, timeoutMs: POLL_MS }, POLL_MS + 5_000);
+      if (waitResult?.status !== 'timeout') break; // agent 完成
+      // 检查活跃度
+      try {
+        const h = await gatewayRpc('chat.history', { sessionKey, limit: 1 }, 5_000);
+        const count = h?.messages?.length || 0;
+        if (count > lastCount) { lastCount = count; lastActivity = Date.now(); }
+      } catch {}
+      if (Date.now() - lastActivity > idleTimeout) {
+        pluginApi.logger.info(`[cluster-hub] task 空闲超时 ${idleTimeout / 1000}s`);
+        break;
+      }
+    }
 
     const history = await gatewayRpc('chat.history', { sessionKey, limit: 30 }, 10_000);
     const messages = history?.messages || [];
@@ -172,49 +189,6 @@ async function waitAndCollectResult(runId: string, sessionKey: string, timeoutMs
   } catch (err: any) {
     gatewayRpc('sessions.delete', { key: sessionKey }, 5_000).catch(() => { });
     return { success: false, error: err.message };
-  }
-}
-
-/**
- * 空闲超时等待 — 分段调用 agent.wait，每段间检查 chat.history 是否有新消息
- * 有新消息则重置空闲计时器，无新消息超过 idleTimeoutMs 则放弃
- */
-async function waitWithIdleTimeout(runId: string, sessionKey: string, idleTimeoutMs: number): Promise<void> {
-  const CHUNK_MS = 30_000; // 每次等待 30 秒
-  let lastMsgCount = 0;
-  let lastActivityAt = Date.now();
-
-  // 获取初始消息数
-  try {
-    const init = await gatewayRpc('chat.history', { sessionKey, limit: 1 }, 5_000);
-    lastMsgCount = init?.total || init?.messages?.length || 0;
-  } catch {}
-
-  while (true) {
-    try {
-      await gatewayRpc('agent.wait', { runId, timeoutMs: CHUNK_MS }, CHUNK_MS + 5_000);
-      return; // agent 完成了
-    } catch (err: any) {
-      // 区分：超时 vs 真正的错误
-      const isTimeout = /timeout|timed?\s*out/i.test(err.message);
-      if (!isTimeout) throw err; // 非超时错误直接抛出
-
-      // 超时了，检查是否有新活动
-      try {
-        const history = await gatewayRpc('chat.history', { sessionKey, limit: 1 }, 5_000);
-        const currentCount = history?.total || history?.messages?.length || 0;
-        if (currentCount > lastMsgCount) {
-          lastMsgCount = currentCount;
-          lastActivityAt = Date.now();
-          pluginApi.logger.info(`[cluster-hub] agent 仍在活动中 (${currentCount} msgs)，重置空闲计时器`);
-        }
-      } catch {}
-
-      // 检查空闲超时
-      if (Date.now() - lastActivityAt > idleTimeoutMs) {
-        throw new Error(`空闲超时 ${Math.round(idleTimeoutMs / 1000)}s — agent 无新输出`);
-      }
-    }
   }
 }
 
@@ -387,6 +361,7 @@ async function handleIncomingChat(msg: WSMessage): Promise<void> {
   try {
     const sessionKey = `hub-chat:${fromNodeId}`;
     const idempotencyKey = randomUUID();
+    const isFeishu = fromNodeId.startsWith('feishu:');
     const agentResult = await gatewayRpc('agent', {
       message: content,
       sessionKey,
@@ -395,54 +370,135 @@ async function handleIncomingChat(msg: WSMessage): Promise<void> {
     }, 15_000);
 
     const runId = agentResult?.runId || idempotencyKey;
-    let lastSentCount = 0;
     let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
-    if (autoRefreshMs && autoRefreshMs > 0) {
+    // 获取 baseline 时间戳（用 timestamp 追踪增量，不受 limit 截断影响）
+    const baseline = await gatewayRpc('chat.history', { sessionKey, limit: 200 }, 10_000);
+    const baselineMsgs = baseline?.messages || [];
+    let lastTs = baselineMsgs.length > 0
+      ? (baselineMsgs[baselineMsgs.length - 1].timestamp || Date.now())
+      : Date.now();
+    // 共享活跃时间戳：2s 定时器发现新消息时更新，waitForAgent 用它检测空闲
+    let lastActivityTs = Date.now();
+
+    // 飞书来源：立即发确认消息（无后缀）
+    if (isFeishu) {
+      client.sendWS({
+        type: 'chat' as any,
+        id: randomUUID(),
+        to: fromNodeId,
+        payload: {
+          content: 'Agent 已开始工作，请稍候...',
+          replyTo: chatId,
+          timestamp: Date.now(),
+          done: false,
+        },
+      });
+    }
+
+    // 飞书来源默认开启 2s 自动刷新
+    const effectiveRefreshMs = isFeishu ? (autoRefreshMs || 2000) : autoRefreshMs;
+
+    if (effectiveRefreshMs && effectiveRefreshMs > 0) {
       refreshTimer = setInterval(async () => {
         try {
-          const history = await gatewayRpc('chat.history', { sessionKey, limit: 30 }, 10_000);
+          const history = await gatewayRpc('chat.history', { sessionKey, limit: 200 }, 10_000);
           const messages = history?.messages || [];
-          if (messages.length > lastSentCount) {
-            const newMsgs = messages.slice(lastSentCount);
-            lastSentCount = messages.length;
-            client.sendWS({
-              type: 'chat' as any,
-              id: randomUUID(),
-              to: fromNodeId,
-              payload: {
-                role: 'delta',
-                messages: formatMessages(newMsgs, whole),
-                timestamp: Date.now(),
-                done: false,
-              },
-            });
+          const newMsgs = messages.filter((m: any) => m.timestamp && m.timestamp > lastTs);
+          if (newMsgs.length > 0) {
+            lastTs = newMsgs[newMsgs.length - 1].timestamp;
+            lastActivityTs = Date.now(); // 刷新活跃时间
+
+            if (isFeishu) {
+              // 飞书：格式化增量 + "持续工作中"
+              const formatted = formatMessagesForFeishu(newMsgs);
+              if (formatted) {
+                client.sendWS({
+                  type: 'chat' as any,
+                  id: randomUUID(),
+                  to: fromNodeId,
+                  payload: {
+                    content: formatted + '\n\n—— 持续工作中 ——',
+                    replyTo: chatId,
+                    timestamp: Date.now(),
+                    done: false,
+                  },
+                });
+              }
+            } else {
+              // 非飞书：原始消息数组
+              client.sendWS({
+                type: 'chat' as any,
+                id: randomUUID(),
+                to: fromNodeId,
+                payload: {
+                  role: 'delta',
+                  messages: formatMessages(newMsgs, whole),
+                  timestamp: Date.now(),
+                  done: false,
+                },
+              });
+            }
           }
         } catch { }
-      }, autoRefreshMs);
+      }, effectiveRefreshMs);
     }
 
     try {
-      await waitWithIdleTimeout(runId, sessionKey, 300_000);
+      // 等待 agent 完成：30s 轮询 + 5 分钟空闲超时
+      const IDLE_TIMEOUT = 300_000;
+      const POLL_MS = 30_000;
+      while (true) {
+        const waitResult = await gatewayRpc('agent.wait', { runId, timeoutMs: POLL_MS }, POLL_MS + 5_000);
+        if (waitResult?.status !== 'timeout') break; // agent 真正完成
+        // agent 还在跑，检查空闲
+        if (Date.now() - lastActivityTs > IDLE_TIMEOUT) {
+          pluginApi.logger.info(`[cluster-hub] 空闲超时 ${IDLE_TIMEOUT / 1000}s，agent 无新输出`);
+          break;
+        }
+      }
     } finally {
       if (refreshTimer) clearInterval(refreshTimer);
     }
 
-    const history = await gatewayRpc('chat.history', { sessionKey, limit: 30 }, 10_000);
+    // 最终发送：获取剩余增量
+    const history = await gatewayRpc('chat.history', { sessionKey, limit: 200 }, 10_000);
     const messages = history?.messages || [];
+    const finalNewMsgs = messages.filter((m: any) => m.timestamp && m.timestamp > lastTs);
 
-    client.sendWS({
-      type: 'chat' as any,
-      id: randomUUID(),
-      to: fromNodeId,
-      payload: {
-        role: 'assistant',
-        messages: formatMessages(messages, whole),
-        replyTo: chatId,
-        timestamp: Date.now(),
-        done: true,
-      },
-    });
+    if (isFeishu) {
+      // 飞书：格式化剩余增量 + "结束"
+      const formatted = formatMessagesForFeishu(finalNewMsgs);
+      client.sendWS({
+        type: 'chat' as any,
+        id: randomUUID(),
+        to: fromNodeId,
+        payload: {
+          content: (formatted || '✅') + '\n\n—— 结束 ——',
+          replyTo: chatId,
+          timestamp: Date.now(),
+          done: true,
+        },
+      });
+      pluginApi.logger.info(`[cluster-hub] 飞书 chat 完成: ${(formatted || '').length} chars`);
+    } else {
+      // 非飞书：完整消息数组
+      const formatted = formatMessages(messages, whole);
+      pluginApi.logger.info(`[cluster-hub] chat 回复: ${formatted.length} msgs`);
+
+      client.sendWS({
+        type: 'chat' as any,
+        id: randomUUID(),
+        to: fromNodeId,
+        payload: {
+          role: 'assistant',
+          messages: formatted,
+          replyTo: chatId,
+          timestamp: Date.now(),
+          done: true,
+        },
+      });
+    }
 
     pluginApi.logger.info(`[cluster-hub] 聊天回复完成 → ${fromNodeId}`);
   } catch (err: any) {
@@ -479,20 +535,182 @@ function formatMessages(messages: any[], whole: boolean): any[] {
 }
 
 // ============================================================================
+// 飞书格式化 — 三段式：thinking + 工具摘要 + 最终回复
+// ============================================================================
+
+const TOOL_META: Record<string, { icon: string; label: string }> = {
+  read: { icon: '📄', label: '读取文件' },
+  write: { icon: '✏️', label: '写入文件' },
+  edit: { icon: '✏️', label: '编辑文件' },
+  exec: { icon: '⚡', label: '执行命令' },
+  process: { icon: '⚡', label: '进程管理' },
+  web_search: { icon: '🔍', label: '搜索网页' },
+  web_fetch: { icon: '🌐', label: '获取网页' },
+  browser: { icon: '🌐', label: '浏览器' },
+  image: { icon: '🖼️', label: '图片分析' },
+  memory_search: { icon: '🧠', label: '搜索记忆' },
+  memory_get: { icon: '🧠', label: '读取记忆' },
+  message: { icon: '💬', label: '发送消息' },
+  cron: { icon: '⏰', label: '定时任务' },
+  tts: { icon: '🔊', label: '语音合成' },
+  canvas: { icon: '🎨', label: '画布' },
+  nodes: { icon: '📱', label: '节点管理' },
+  gateway: { icon: '🔌', label: '网关' },
+  session_status: { icon: '📊', label: '状态查询' },
+  sessions_list: { icon: '📋', label: '会话列表' },
+  sessions_spawn: { icon: '🚀', label: '创建子任务' },
+  sessions_send: { icon: '💬', label: '会话消息' },
+  sessions_history: { icon: '📋', label: '会话历史' },
+  hub_status: { icon: '📡', label: 'Hub 状态' },
+  hub_send: { icon: '📡', label: 'Hub 发送' },
+  hub_nodes: { icon: '📡', label: 'Hub 节点' },
+  hub_tasks: { icon: '📡', label: 'Hub 任务' },
+  hub_batch_send: { icon: '📡', label: 'Hub 批量发送' },
+  hub_wait_task: { icon: '📡', label: 'Hub 等待' },
+  hub_wait_all: { icon: '📡', label: 'Hub 等待全部' },
+  feishu_doc: { icon: '📝', label: '飞书文档' },
+  feishu_wiki: { icon: '📚', label: '飞书知识库' },
+  feishu_drive: { icon: '📁', label: '飞书云盘' },
+  feishu_contact: { icon: '👤', label: '飞书联系人' },
+  feishu_message: { icon: '💬', label: '飞书消息' },
+  feishu_perm: { icon: '🔐', label: '飞书权限' },
+  feishu_bitable_get_meta: { icon: '📊', label: '多维表格' },
+  feishu_bitable_list_fields: { icon: '📊', label: '多维表格' },
+  feishu_bitable_list_records: { icon: '📊', label: '多维表格' },
+  feishu_bitable_create_record: { icon: '📊', label: '多维表格' },
+  feishu_bitable_update_record: { icon: '📊', label: '多维表格' },
+  feishu_app_scopes: { icon: '🔑', label: '权限查询' },
+};
+
+function getToolMeta(name: string): { icon: string; label: string } {
+  const n = (name || 'tool').toLowerCase().trim();
+  return TOOL_META[n] || { icon: '🔧', label: name || 'Tool' };
+}
+
+function getToolDetail(name: string, args: any): string {
+  if (!args || typeof args !== 'object') return '';
+  const n = (name || '').toLowerCase();
+  if (n === 'exec' && args.command) {
+    const cmd = args.command.length > 60 ? args.command.substring(0, 60) + '…' : args.command;
+    return cmd;
+  }
+  if ((n === 'read' || n === 'write' || n === 'edit') && (args.path || args.file_path)) {
+    const p = args.path || args.file_path;
+    return p.replace(/\/Users\/[^/]+/g, '~').replace(/\/home\/[^/]+/g, '~');
+  }
+  if (n === 'web_search' && args.query) return args.query;
+  if (n === 'web_fetch' && args.url) {
+    const u = args.url;
+    return u.length > 60 ? u.substring(0, 60) + '…' : u;
+  }
+  if (n === 'browser' && args.action) return args.action;
+  if (n === 'message' && args.action) return args.action;
+  if (n === 'image' && args.prompt) {
+    return args.prompt.length > 60 ? args.prompt.substring(0, 60) + '…' : args.prompt;
+  }
+  // 通用：取第一个有意义的参数
+  for (const key of ['path', 'file_path', 'command', 'query', 'url', 'action', 'name', 'text']) {
+    if (typeof args[key] === 'string' && args[key]) {
+      const v = args[key];
+      return v.length > 60 ? v.substring(0, 60) + '…' : v;
+    }
+  }
+  return '';
+}
+
+/** 将一批增量消息格式化为飞书文本（每次只处理新消息） */
+function formatMessagesForFeishu(messages: any[]): string {
+  const parts: string[] = [];
+
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue;
+
+    if (!Array.isArray(msg.content)) {
+      // 字符串 content
+      if (typeof msg.content === 'string' && msg.content) {
+        const cleaned = msg.content
+          .replace(/<\/?final>/g, '')
+          .replace(/<think>[\s\S]*?<\/think>/g, '')
+          .trim();
+        if (cleaned) parts.push(cleaned);
+      }
+      continue;
+    }
+
+    // 结构化 content 数组
+    const thinkings: string[] = [];
+    const toolCalls: string[] = [];
+    const texts: string[] = [];
+
+    for (const block of msg.content) {
+      if (block.type === 'thinking' && block.thinking) {
+        const truncated = block.thinking.length > 300
+          ? block.thinking.substring(0, 300) + '...'
+          : block.thinking;
+        const lines = truncated.split('\n').map((l: string) => '> ' + l).join('\n');
+        thinkings.push(`> 🧠 思考过程\n${lines}`);
+      }
+      if (block.type === 'toolCall' && block.name) {
+        const meta = getToolMeta(block.name);
+        const detail = getToolDetail(block.name, block.arguments);
+        const line = detail
+          ? `${meta.icon} ${meta.label} ✓ \`${detail}\``
+          : `${meta.icon} ${meta.label} ✓`;
+        toolCalls.push(line);
+      }
+      if (block.type === 'text' && block.text) {
+        const cleaned = block.text
+          .replace(/<\/?final>/g, '')
+          .replace(/<think>[\s\S]*?<\/think>/g, '')
+          .trim();
+        if (cleaned) texts.push(cleaned);
+      }
+    }
+
+    if (thinkings.length > 0) parts.push(thinkings.join('\n'));
+    if (toolCalls.length > 0) parts.push(toolCalls.join('\n'));
+    if (texts.length > 0) parts.push(texts.join('\n'));
+  }
+
+  return parts.join('\n\n');
+}
+
+// ============================================================================
 // 任务发送 — 父节点向子节点下发
 // ============================================================================
 
+/** 从缓存节点列表中按 id / name / alias 模糊匹配，返回 UUID。找不到则原样返回 */
+async function resolveNodeId(input: string): Promise<string> {
+  if (!input) return input;
+  let nodes = client.getCachedNodes();
+  // 缓存为空时尝试拉取
+  if (nodes.length === 0) {
+    try { nodes = await client.fetchNodes(); } catch { /* ignore */ }
+  }
+  // 精确匹配 id
+  const byId = nodes.find(n => n.id === input);
+  if (byId) return byId.id;
+  // 精确匹配 name 或 alias（忽略大小写）
+  const lower = input.toLowerCase();
+  const byName = nodes.find(n =>
+    n.name?.toLowerCase() === lower || (n as any).alias?.toLowerCase() === lower
+  );
+  if (byName) return byName.id;
+  // 没匹配到，原样返回（让 Hub 报错）
+  return input;
+}
+
 function resolveNodeName(nodeId: string): string | undefined {
-  // 从 hub-client 缓存的节点列表中查找名称
   try {
-    const status = client.getStatus();
-    // 简单返回 undefined，让 store 自己处理
-    return undefined;
+    const nodes = client.getCachedNodes();
+    const node = nodes.find(n => n.id === nodeId);
+    return node?.name || undefined;
   } catch { return undefined; }
 }
 
-function sendTaskAndTrack(nodeId: string, instruction: string): string {
+async function sendTaskAndTrack(inputNodeId: string, instruction: string): Promise<string> {
   const taskId = randomUUID();
+  const nodeId = await resolveNodeId(inputNodeId);
 
   if (isSelfNode(nodeId) && client.getConfig().selfTaskMode === 'local') {
     // 自发本地任务
@@ -982,7 +1200,7 @@ const plugin = {
           respond(false, { message: '需要 nodeId 和 instruction' });
           return;
         }
-        const taskId = sendTaskAndTrack(nodeId, instruction);
+        const taskId = await sendTaskAndTrack(nodeId, instruction);
         respond(true, { taskId });
       } catch (err: any) {
         respond(false, { message: err.message });
@@ -1097,7 +1315,7 @@ const plugin = {
         for (const t of tasks) {
           if (!t.nodeId || !t.instruction) continue;
           try {
-            const taskId = sendTaskAndTrack(t.nodeId, t.instruction);
+            const taskId = await sendTaskAndTrack(t.nodeId, t.instruction);
             results.push({ nodeId: t.nodeId, taskId, ok: true });
           } catch (err: any) {
             results.push({ nodeId: t.nodeId, ok: false, error: err.message });
@@ -1213,7 +1431,7 @@ const plugin = {
           respond(false, { message: '需要 nodeId 和 instruction' });
           return;
         }
-        const taskId = sendTaskAndTrack(nodeId, instruction);
+        const taskId = await sendTaskAndTrack(nodeId, instruction);
         respond(true, { taskId, status: 'sent' });
       } catch (err: any) {
         respond(false, { message: err.message });
@@ -1239,7 +1457,7 @@ const plugin = {
 
           respond(true, { result });
         } else {
-          const taskId = sendTaskAndTrack(params.nodeId, params.instruction);
+          const taskId = await sendTaskAndTrack(params.nodeId, params.instruction);
           respond(true, { taskId, status: 'sent', note: '远程任务异步执行' });
         }
       } catch (err: any) {
@@ -1401,10 +1619,12 @@ const plugin = {
           return { content: [{ type: 'text', text: '❌ Hub 未注册' }] };
         }
         try {
-          if (isSelfNode(params.nodeId) && client.getConfig().selfTaskMode === 'local') {
+          const resolvedId = await resolveNodeId(params.nodeId);
+          const displayName = resolveNodeName(resolvedId) || params.nodeId;
+          if (isSelfNode(resolvedId) && client.getConfig().selfTaskMode === 'local') {
             // 自发本地：记录到 store + 同步等结果
             const taskId = randomUUID();
-            const task = taskStore.recordSent(taskId, params.nodeId, client.getConfig().nodeName, params.instruction, 'local');
+            const task = taskStore.recordSent(taskId, resolvedId, client.getConfig().nodeName, params.instruction, 'local');
             broadcast('hub.task.update', { task });
 
             const result = await executeTaskLocally(params.instruction);
@@ -1412,13 +1632,13 @@ const plugin = {
             if (updated) broadcast('hub.task.update', { task: updated });
 
             const text = result.success
-              ? `✅ 节点 ${params.nodeId} 返回 (本地):\n\n${result.result}`
-              : `❌ 节点 ${params.nodeId} 执行失败 (本地):\n\n${result.error}`;
+              ? `✅ 节点 ${displayName} 返回 (本地):\n\n${result.result}`
+              : `❌ 节点 ${displayName} 执行失败 (本地):\n\n${result.error}`;
             return { content: [{ type: 'text', text }], data: { result, mode: 'local' } };
           }
-          const taskId = sendTaskAndTrack(params.nodeId, params.instruction);
+          const taskId = await sendTaskAndTrack(resolvedId, params.instruction);
           return {
-            content: [{ type: 'text', text: `✅ 任务已下发 → 节点 ${params.nodeId}\n\ntaskId: ${taskId}\n\n任务将异步执行，用 hub_tasks 查看进度。` }],
+            content: [{ type: 'text', text: `✅ 任务已下发 → 节点 ${displayName}\n\ntaskId: ${taskId}\n\n任务将异步执行，用 hub_tasks 查看进度。` }],
             data: { taskId, mode: 'async' },
           };
         } catch (err: any) {
@@ -1545,9 +1765,11 @@ const plugin = {
 
         for (const t of params.tasks) {
           try {
-            if (isSelfNode(t.nodeId) && client.getConfig().selfTaskMode === 'local') {
+            const resolvedId = await resolveNodeId(t.nodeId);
+            const displayName = resolveNodeName(resolvedId) || t.nodeId;
+            if (isSelfNode(resolvedId) && client.getConfig().selfTaskMode === 'local') {
               const taskId = randomUUID();
-              const task = taskStore.recordSent(taskId, t.nodeId, client.getConfig().nodeName, t.instruction, 'local');
+              const task = taskStore.recordSent(taskId, resolvedId, client.getConfig().nodeName, t.instruction, 'local');
               broadcast('hub.task.update', { task });
               // 异步执行，不等待
               executeTaskLocally(t.instruction).then(result => {
@@ -1557,10 +1779,10 @@ const plugin = {
                 const updated = taskStore.recordResult(taskId, { success: false, error: err.message });
                 if (updated) broadcast('hub.task.update', { task: updated });
               });
-              results.push({ nodeId: t.nodeId, taskId, instruction: t.instruction.substring(0, 60), mode: 'local' });
+              results.push({ nodeId: displayName, taskId, instruction: t.instruction.substring(0, 60), mode: 'local' });
             } else {
-              const taskId = sendTaskAndTrack(t.nodeId, t.instruction);
-              results.push({ nodeId: t.nodeId, taskId, instruction: t.instruction.substring(0, 60), mode: 'remote' });
+              const taskId = await sendTaskAndTrack(resolvedId, t.instruction);
+              results.push({ nodeId: displayName, taskId, instruction: t.instruction.substring(0, 60), mode: 'remote' });
             }
           } catch (err: any) {
             results.push({ nodeId: t.nodeId, taskId: `ERROR: ${err.message}`, instruction: t.instruction.substring(0, 60), mode: 'error' });
@@ -1759,7 +1981,7 @@ const plugin = {
             taskStore.recordResult(taskId, result);
             console.log(result.success ? `✅ ${result.result}` : `❌ ${result.error}`);
           } else {
-            const taskId = sendTaskAndTrack(nodeId, instruction);
+            const taskId = await sendTaskAndTrack(nodeId, instruction);
             console.log(`✅ 任务已下发, taskId: ${taskId}`);
           }
         });

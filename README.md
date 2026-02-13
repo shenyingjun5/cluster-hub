@@ -15,32 +15,38 @@ OpenClaw Hub 集群插件 — 让多台 OpenClaw 节点跨网络协作，实现�
 
 ## 安装
 
+### 方式一：openclaw plugins install（推荐）
+
 ```bash
-# 一键安装（推荐）
 openclaw plugins install @hpplay-lebo/cluster-hub
+openclaw gateway restart
 ```
 
-安装完成后重启 Gateway 加载插件：
+### 方式二：git clone
 
 ```bash
+cd ~/.openclaw/extensions
+git clone https://github.com/shenyingjun5/cluster-hub.git cluster-hub
 openclaw gateway restart
 ```
 
 ### 更新
 
 ```bash
-# 更新到最新版本
+# 方式一（推荐，需通过 plugins install 安装的）
 openclaw plugins update cluster-hub
+openclaw gateway restart
 
-# 重启 Gateway 生效
+# 方式二（git clone 安装的）
+cd ~/.openclaw/extensions/cluster-hub && git pull
 openclaw gateway restart
 ```
 
 也可以直接告诉 AI："**更新 Hub 插件**"，它会自动执行。
 
-### 从旧版迁移
+### 从 git clone 迁移到 plugins install
 
-如果之前通过 `git clone` 安装，需先删除旧目录：
+已通过 git clone 安装的用户，可以迁移到 plugins install 管理：
 
 ```bash
 rm -rf ~/.openclaw/extensions/cluster-hub
@@ -48,7 +54,7 @@ openclaw plugins install @hpplay-lebo/cluster-hub
 openclaw gateway restart
 ```
 
-> 已有配置（nodeId、token 等）不受影响。
+> 已有配置（nodeId、token 等）保存在 `openclaw.json` 中，不受影响。
 
 ### 验证安装
 

@@ -16,25 +16,27 @@ OpenClaw Hub 集群插件 — 让多台 OpenClaw 节点跨网络协作，实现�
 ## 安装
 
 ```bash
-# 克隆到 OpenClaw 插件目录
-cd ~/.openclaw/extensions
-git clone https://github.com/shenyingjun5/cluster-hub.git cluster-hub
+# 一键安装（推荐）
+openclaw plugins install @hpplay-lebo/cluster-hub
+```
 
-# 重启 Gateway
+安装完成后重启 Gateway 加载插件：
+
+```bash
 openclaw gateway restart
 ```
 
 ### 更新
 
 ```bash
-# 自动检查并更新到最新版本
-~/.openclaw/extensions/cluster-hub/update.sh
+# 更新到最新版本
+openclaw plugins update cluster-hub
 
 # 重启 Gateway 生效
 openclaw gateway restart
 ```
 
-也可以直接告诉 AI："更新 Hub 插件"，它会自动执行。
+也可以直接告诉 AI："**更新 Hub 插件**"，它会自动执行。
 
 ### 验证安装
 

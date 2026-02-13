@@ -38,6 +38,18 @@ openclaw gateway restart
 
 也可以直接告诉 AI："**更新 Hub 插件**"，它会自动执行。
 
+### 从旧版迁移
+
+如果之前通过 `git clone` 安装，需先删除旧目录：
+
+```bash
+rm -rf ~/.openclaw/extensions/cluster-hub
+openclaw plugins install @hpplay-lebo/cluster-hub
+openclaw gateway restart
+```
+
+> 已有配置（nodeId、token 等）不受影响。
+
 ### 验证安装
 
 ```bash

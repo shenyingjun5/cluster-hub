@@ -595,7 +595,7 @@ async function permRemove(token: string, type: string, memberType: string, membe
 // ============================================================
 
 async function contactSearch(query: string) {
-  // 方案1: 尝试搜索 API
+  // 方案1: 尝试搜索 API (requires user_access_token, may fail with tenant_token)
   try {
     const data = await feishuPost('/open-apis/search/v1/user', { query });
     const users = (data?.users || []).map((u: any) => ({
@@ -608,31 +608,78 @@ async function contactSearch(query: string) {
     if (users.length > 0) return { users };
   } catch {}
 
-  // 方案2: 回退到通讯录按部门列出 + 名字过滤
+  // 方案2: 逐部门查找（根部门 + 子部门递归）
   try {
     const allUsers: any[] = [];
-    let pageToken: string | undefined;
-    // 最多翻3页（300人），避免大企业超时
-    for (let i = 0; i < 3; i++) {
-      const params: Record<string, string> = { department_id: '0', page_size: '100', user_id_type: 'open_id' };
-      if (pageToken) params.page_token = pageToken;
-      const data = await feishuGet('/open-apis/contact/v3/users/find_by_department', params);
-      const items = data?.items || [];
-      allUsers.push(...items);
-      if (!data?.has_more) break;
-      pageToken = data?.page_token;
-    }
+    const seenIds = new Set<string>();
     const q = query.toLowerCase();
-    const matched = allUsers
-      .filter((u: any) => (u.name || '').toLowerCase().includes(q) || (u.en_name || '').toLowerCase().includes(q))
-      .map((u: any) => ({
-        open_id: u.open_id,
-        name: u.name,
-        en_name: u.en_name,
-        email: u.email,
-        department_ids: u.department_ids,
-      }));
-    return { users: matched, source: 'contact_directory' };
+
+    // 先收集所有部门ID
+    const deptIds: string[] = ['0'];
+    const deptQueue: string[] = ['0'];
+
+    // BFS 获取子部门（使用 children API 或 list API）
+    while (deptQueue.length > 0 && deptIds.length < 200) {
+      const parentId = deptQueue.shift()!;
+      let pageToken: string | undefined;
+      for (let page = 0; page < 5; page++) {
+        const params: Record<string, string> = {
+          parent_department_id: parentId,
+          page_size: '50',
+          user_id_type: 'open_id',
+          department_id_type: 'open_department_id',
+          fetch_child: 'true',
+        };
+        if (pageToken) params.page_token = pageToken;
+        try {
+          const data = await feishuGet('/open-apis/contact/v3/departments', params);
+          for (const dept of (data?.items || [])) {
+            const id = dept.open_department_id;
+            if (id && !deptIds.includes(id)) {
+              deptIds.push(id);
+            }
+          }
+          if (!data?.has_more) break;
+          pageToken = data?.page_token;
+        } catch { break; }
+      }
+    }
+
+    // 逐部门查找用户
+    for (const deptId of deptIds) {
+      let pageToken: string | undefined;
+      for (let page = 0; page < 20; page++) {
+        const params: Record<string, string> = {
+          department_id: deptId,
+          page_size: '50',
+          user_id_type: 'open_id',
+        };
+        if (deptId !== '0') params.department_id_type = 'open_department_id';
+        if (pageToken) params.page_token = pageToken;
+        let data: any;
+        try {
+          data = await feishuGet('/open-apis/contact/v3/users/find_by_department', params);
+        } catch { break; }
+        for (const u of (data?.items || [])) {
+          if (!seenIds.has(u.open_id) &&
+              ((u.name || '').toLowerCase().includes(q) || (u.en_name || '').toLowerCase().includes(q))) {
+            seenIds.add(u.open_id);
+            allUsers.push({
+              open_id: u.open_id,
+              name: u.name,
+              en_name: u.en_name,
+              email: u.email,
+              department_ids: u.department_ids,
+            });
+          }
+        }
+        if (!data?.has_more) break;
+        pageToken = data?.page_token;
+      }
+      if (allUsers.length >= 10) break;
+    }
+
+    return { users: allUsers, source: 'contact_directory' };
   } catch (e: any) {
     return { users: [], error: e.message };
   }

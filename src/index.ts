@@ -150,18 +150,21 @@ async function waitAndCollectResult(runId: string, sessionKey: string, timeoutMs
   const idleTimeout = timeoutMs || client.getConfig().taskTimeoutMs || 300_000;
 
   try {
-    // 等待 agent 完成：30s 轮询 + 空闲超时
+    // 等待 agent 完成：30s 轮询 + 空闲超时（用 timestamp 追踪活跃度）
     const POLL_MS = 30_000;
     let lastActivity = Date.now();
-    let lastCount = 0;
+    let lastTs = 0; // 最新消息的 timestamp
     while (true) {
       const waitResult = await gatewayRpc('agent.wait', { runId, timeoutMs: POLL_MS }, POLL_MS + 5_000);
       if (waitResult?.status !== 'timeout') break; // agent 完成
-      // 检查活跃度
+      // 用 timestamp 检查活跃度（不受 limit 截断影响）
       try {
-        const h = await gatewayRpc('chat.history', { sessionKey, limit: 1 }, 5_000);
-        const count = h?.messages?.length || 0;
-        if (count > lastCount) { lastCount = count; lastActivity = Date.now(); }
+        const h = await gatewayRpc('chat.history', { sessionKey, limit: 5 }, 5_000);
+        const msgs = h?.messages || [];
+        if (msgs.length > 0) {
+          const latestTs = msgs[msgs.length - 1].timestamp || 0;
+          if (latestTs > lastTs) { lastTs = latestTs; lastActivity = Date.now(); }
+        }
       } catch {}
       if (Date.now() - lastActivity > idleTimeout) {
         pluginApi.logger.info(`[cluster-hub] task 空闲超时 ${idleTimeout / 1000}s`);
@@ -348,7 +351,7 @@ class TaskQueue {
 // ============================================================================
 
 async function handleIncomingChat(msg: WSMessage): Promise<void> {
-  const { content, config } = msg.payload || {};
+  const { content, config, sender } = msg.payload || {};
   const fromNodeId = msg.from!;
   const chatId = msg.id;  // 保留原始 chatId 用于回复关联
   const whole = config?.whole ?? false;
@@ -362,8 +365,16 @@ async function handleIncomingChat(msg: WSMessage): Promise<void> {
     const sessionKey = `hub-chat:${fromNodeId}`;
     const idempotencyKey = randomUUID();
     const isFeishu = fromNodeId.startsWith('feishu:');
+
+    // 如果有发送者信息（飞书用户），注入到消息中让 AI 知道是谁在说话
+    let messageForAI = content as string;
+    if (sender?.platform === 'feishu' && sender?.userId) {
+      const userLabel = sender.userName ? `${sender.userName}（${sender.userId}）` : sender.userId;
+      messageForAI = `[飞书用户 ${userLabel}]\n${content}`;
+    }
+
     const agentResult = await gatewayRpc('agent', {
-      message: content,
+      message: messageForAI,
       sessionKey,
       idempotencyKey,
       deliver: false,

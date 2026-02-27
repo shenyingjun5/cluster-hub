@@ -749,6 +749,28 @@ async function messageSendBatch(receiveIds: string[], receiveIdType: string, msg
   return { sent: results.filter(r => r.success).length, failed: results.filter(r => !r.success).length, results };
 }
 
+async function messageUrgent(messageId: string, kind: 'sms' | 'phone', userIdType: string, userIds: string[]) {
+  if (!messageId) throw new Error('message_id 必填');
+  if (!userIds?.length) throw new Error('user_ids 必填（至少一个）');
+
+  const path = kind === 'sms'
+    ? `/open-apis/im/v1/messages/${messageId}/urgent_sms`
+    : `/open-apis/im/v1/messages/${messageId}/urgent_phone`;
+
+  const data = await feishuPost(path, {
+    user_id_type: userIdType || 'open_id',
+    user_id_list: userIds,
+  });
+
+  return {
+    message_id: messageId,
+    kind,
+    user_id_type: userIdType || 'open_id',
+    user_count: userIds.length,
+    result: data,
+  };
+}
+
 // ============================================================
 //  App Scopes API
 // ============================================================
@@ -968,11 +990,11 @@ export function registerFeishuTools(api: any, logger: any): boolean {
   api.registerTool({
     name: 'feishu_message',
     label: 'Feishu Message',
-    description: 'Send Feishu messages. Actions: send (single), send_batch (multiple). Supports text and rich text. Use feishu_contact to look up open_id first if needed.',
+    description: 'Send Feishu messages. Actions: send, send_batch, urgent_sms, urgent_phone. Supports text and rich text. Use feishu_contact to look up open_id first if needed.',
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['send', 'send_batch'], description: 'Action' },
+        action: { type: 'string', enum: ['send', 'send_batch', 'urgent_sms', 'urgent_phone'], description: 'Action' },
         receive_id: { type: 'string', description: 'Recipient ID (open_id or email)' },
         receive_id_type: { type: 'string', enum: ['open_id', 'email', 'user_id', 'chat_id'], description: 'Recipient ID type (default: open_id)' },
         receive_ids: { type: 'array', items: { type: 'string' }, description: 'Multiple recipient IDs for send_batch' },
@@ -984,6 +1006,9 @@ export function registerFeishuTools(api: any, logger: any): boolean {
           description: 'Rich text content blocks (for post type). Array of lines, each line is array of elements like {tag:"text",text:"..."} or {tag:"a",text:"click",href:"https://..."}',
           items: { type: 'array', items: { type: 'object' } },
         },
+        message_id: { type: 'string', description: 'Message ID for urgent actions' },
+        user_id_type: { type: 'string', enum: ['open_id', 'user_id', 'union_id'], description: 'User ID type for urgent actions (default: open_id)' },
+        user_ids: { type: 'array', items: { type: 'string' }, description: 'Target user IDs for urgent actions' },
       },
       required: ['action'],
     },
@@ -1010,6 +1035,22 @@ export function registerFeishuTools(api: any, logger: any): boolean {
             return json(await messageSendBatch(ids, idType, 'post', JSON.stringify(post)));
           }
           return json({ error: 'Unsupported msg_type for batch' });
+        } else if (p.action === 'urgent_sms' || p.action === 'urgent_phone') {
+          const urgentKind = p.action === 'urgent_sms' ? 'sms' : 'phone';
+          const uidType = p.user_id_type || 'open_id';
+          const uids = p.user_ids || (p.receive_id ? [p.receive_id] : []);
+          let mid = p.message_id;
+
+          // 兼容：若没给 message_id，则先发一条 text 再加急
+          if (!mid) {
+            if (!p.receive_id || !p.text) {
+              return json({ error: 'urgent_* 需要 message_id；若不传则需同时提供 receive_id + text 用于先发消息' });
+            }
+            const sent = await messageSendText(p.receive_id, idType, p.text);
+            mid = sent.message_id;
+          }
+
+          return json(await messageUrgent(mid, urgentKind, uidType, uids));
         }
         return json({ error: `Unknown action: ${p.action}` });
       } catch (err: any) { return json({ error: err.message }); }

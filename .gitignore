@@ -6,3 +6,4 @@ dist/
 *.js.map
 !src/
 docs/GUIDE.md
+.agent/
